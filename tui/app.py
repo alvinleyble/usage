@@ -20,6 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from i18n import packaged_resource_path
+from menubar.reset_window import format_remaining_percentage
 from tui.sprite import render_sprite
 from usage_client import PollState, UsageSnapshot
 from usage_common.usage_lang import detect_lang
@@ -114,6 +115,8 @@ def _usage_block(
     reset_at: float,
     now: float,
     language: str,
+    window_seconds: float | None = None,
+    reset_is_authoritative: bool = False,
 ) -> RenderableType:
     row = Table.grid(expand=False, padding=(0, 1))
     row.add_column(width=4)
@@ -125,7 +128,12 @@ def _usage_block(
         _chip(label),
     )
 
-    countdown = Text.assemble("    ", (format_countdown(reset_at, language, now), DIM))
+    reset_text = (
+        format_remaining_percentage(reset_at, window_seconds, now)
+        if reset_is_authoritative
+        else None
+    ) or format_countdown(reset_at, language, now)
+    countdown = Text.assemble("    ", (reset_text, DIM))
     return Group(row, countdown)
 
 
@@ -241,6 +249,8 @@ def render_screen(state: AppViewState, frame_index: int) -> Panel:
                 state.snapshot.current_reset_at,
                 now,
                 state.language,
+                state.snapshot.current_window_seconds,
+                state.snapshot.current_reset_is_authoritative,
             )
             if state.snapshot.current_percent is not None
             else _missing_usage_block(_t(state.language, "current_label"), state.language)
@@ -252,6 +262,8 @@ def render_screen(state: AppViewState, frame_index: int) -> Panel:
                 state.snapshot.weekly_reset_at,
                 now,
                 state.language,
+                state.snapshot.weekly_window_seconds,
+                state.snapshot.weekly_reset_is_authoritative,
             )
             if state.snapshot.weekly_percent is not None
             else _missing_usage_block(_t(state.language, "weekly_label"), state.language)

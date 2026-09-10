@@ -21,6 +21,7 @@ import os
 import sys
 from contextlib import suppress
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, cast
 
@@ -275,8 +276,16 @@ def _parse_iso8601(value: str) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
-def _read_weekly_quota() -> Optional[Tuple[float, float]]:
-    """Return the latest local used percentage and seconds until its weekly reset."""
+def _remaining_percentage(remaining: float, window_seconds: Optional[float]) -> Optional[str]:
+    if window_seconds is None or window_seconds <= 0 or remaining < 0:
+        return None
+    percent = max(0.0, min(100.0, remaining / window_seconds * 100.0))
+    rounded = Decimal(str(percent)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return "{}%".format(format(rounded, "f").rstrip("0").rstrip("."))
+
+
+def _read_weekly_quota() -> Optional[Tuple[float, float, Optional[float]]]:
+    """Return the latest quota and its provider-reported period when available."""
     try:
         for line in _tail_lines(GROK_LOG_PATH):
             try:
@@ -291,13 +300,18 @@ def _read_weekly_quota() -> Optional[Tuple[float, float]]:
             used = _as_float(config.get("creditUsagePercent", 0.0))
             period = _as_dict(config.get("currentPeriod"))
             end = period.get("end")
+            start = period.get("start")
             if used is None or not 0.0 <= used <= 100.0 or not isinstance(end, str):
                 return None
             reset_at = _parse_iso8601(end)
+            period_start = _parse_iso8601(start) if isinstance(start, str) else None
             if reset_at is None:
                 return None
             remaining = (reset_at - datetime.now(timezone.utc)).total_seconds()
-            return (used, remaining) if remaining >= 0 else None
+            window_seconds = (
+                (reset_at - period_start).total_seconds() if period_start is not None else None
+            )
+            return (used, remaining, window_seconds) if remaining >= 0 else None
     except OSError:
         return None
     return None
@@ -333,9 +347,11 @@ def _render_core(data: Dict[str, Any]) -> str:
     quota_parts: List[Tuple[str, str, str]] = []
     quota = _read_weekly_quota()
     if quota is not None:
-        used, seconds = quota
-        reset = ""
-        if _detect_lang() in ("zh-TW", "zh-CN"):
+        used, seconds, window_seconds = quota
+        remaining_percentage = _remaining_percentage(seconds, window_seconds)
+        if remaining_percentage is not None:
+            reset = f" ({remaining_percentage})"
+        elif _detect_lang() in ("zh-TW", "zh-CN"):
             reset = f" ({_t('remaining_prefix')}{fmt_duration(seconds)})"
         else:
             reset = f" ({fmt_duration(seconds)} {_t('remaining_prefix')})"

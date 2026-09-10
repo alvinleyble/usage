@@ -28,6 +28,7 @@ import tempfile
 import time
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 
@@ -695,6 +696,29 @@ def _heavy_warning(data: Dict[str, Any], now_ts: Optional[float] = None) -> Opti
     return f"\033[38;5;160m⚠ {detail} · {_t('warn_clear')}{C['reset']}"
 
 
+def _window_seconds(entry: Dict[str, Any]) -> Optional[float]:
+    for key, multiplier in (
+        ("window_seconds", 1.0),
+        ("window_duration_seconds", 1.0),
+        ("window_minutes", 60.0),
+        ("window_duration_minutes", 60.0),
+    ):
+        value = _as_float(entry.get(key))
+        if value is not None and value > 0:
+            return value * multiplier
+    return None
+
+
+def _remaining_percentage(
+    reset_at: float, window_seconds: Optional[float], now: float
+) -> Optional[str]:
+    if window_seconds is None or window_seconds <= 0 or reset_at < now:
+        return None
+    percent = max(0.0, min(100.0, (reset_at - now) / window_seconds * 100.0))
+    rounded = Decimal(str(percent)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return "{}%".format(format(rounded, "f").rstrip("0").rstrip("."))
+
+
 def _render_core(data: Dict[str, Any], now: datetime) -> str:
     width = get_width()
     ctx = _as_dict(data.get("context_window"))
@@ -724,12 +748,18 @@ def _render_core(data: Dict[str, Any], now: datetime) -> str:
         reset_str = ""
         resets_at = _as_float(entry.get("resets_at"))
         if resets_at is not None:
-            remain = int(resets_at) - int(now.timestamp())
-            if remain > 0:
-                if lang in ("zh-TW", "zh-CN"):
-                    reset_str = f" ({_t('remaining_prefix')}{fmt_duration(remain)})"
-                else:
-                    reset_str = f" ({fmt_duration(remain)} {_t('remaining_prefix')})"
+            remaining_percentage = _remaining_percentage(
+                resets_at, _window_seconds(entry), now.timestamp()
+            )
+            if remaining_percentage is not None:
+                reset_str = f" ({remaining_percentage})"
+            else:
+                remain = int(resets_at) - int(now.timestamp())
+                if remain > 0:
+                    if lang in ("zh-TW", "zh-CN"):
+                        reset_str = f" ({_t('remaining_prefix')}{fmt_duration(remain)})"
+                    else:
+                        reset_str = f" ({fmt_duration(remain)} {_t('remaining_prefix')})"
         rl_parts.append(
             (
                 f"{C['blue']}{label}:{C['reset']}{progress_bar(pct_float, bar_w)}{reset_str}",

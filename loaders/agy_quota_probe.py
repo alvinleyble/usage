@@ -15,7 +15,9 @@ endpoint for the quota summary. No CLI is spawned, no screen text is parsed.
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import platform
 import shutil
 import subprocess
@@ -82,6 +84,10 @@ class AgyQuotaWindow:
     remaining_percent: float
     resets_in: str | None
     resets_in_minutes: int | None
+    # Directly reported boundary and duration.  The display must not guess a
+    # generic session/week length when either is absent.
+    resets_at: float | None = None
+    window_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,15 +544,20 @@ def _bucket_to_window(bucket: dict[str, object]) -> AgyQuotaWindow | None:
         return None
     remaining = max(0.0, min(1.0, fraction)) * 100.0
     reset_time = _bucket_reset_time(bucket)
+    reset_at = _parse_timestamp(reset_time) if reset_time is not None else None
+    window_seconds = _reported_window_seconds(bucket)
     if remaining >= 100.0 and reset_time is None:
         return AgyQuotaWindow(100.0, None, None)
-    if reset_time is None:
-        return AgyQuotaWindow(remaining, None, None)
-    minutes = _minutes_until(reset_time)
-    if minutes is None:
-        return AgyQuotaWindow(remaining, None, None)
-    minutes = max(0, minutes)
-    return AgyQuotaWindow(remaining, _format_resets_in(minutes), minutes)
+    if reset_at is None:
+        return AgyQuotaWindow(remaining, None, None, window_seconds=window_seconds)
+    minutes = max(0, int((reset_at - datetime.now(UTC)).total_seconds() // 60))
+    return AgyQuotaWindow(
+        remaining,
+        _format_resets_in(minutes),
+        minutes,
+        resets_at=reset_at.timestamp(),
+        window_seconds=window_seconds,
+    )
 
 
 def _remaining_fraction(bucket: dict[str, object]) -> float | None:
@@ -573,6 +584,28 @@ def _bucket_reset_time(bucket: dict[str, object]) -> str | None:
         if value:
             return value
     return None
+
+
+def _reported_window_seconds(bucket: dict[str, object]) -> float | None:
+    """Read an explicit duration from Antigravity's quota bucket, never its label."""
+    for key, multiplier in (
+        ("windowSeconds", 1.0),
+        ("window_seconds", 1.0),
+        ("windowMinutes", 60.0),
+        ("window_minutes", 60.0),
+    ):
+        value = _coerce_float(bucket.get(key))
+        if value is not None and math.isfinite(value) and value > 0:
+            return value * multiplier
+    window = _coerce_str(bucket.get("window"))
+    if window is None:
+        return None
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([mhd])\s*", window.lower())
+    if match is None:
+        return None
+    value = float(match.group(1))
+    multiplier = {"m": 60.0, "h": 3600.0, "d": 86400.0}[match.group(2)]
+    return value * multiplier if value > 0 else None
 
 
 def _seconds_until(expiry: str) -> float:
@@ -685,6 +718,8 @@ def _window_to_payload(window: AgyQuotaWindow) -> dict[str, float | int | str | 
         "remaining_percent": window.remaining_percent,
         "resets_in": window.resets_in,
         "resets_in_minutes": window.resets_in_minutes,
+        "resets_at": window.resets_at,
+        "window_seconds": window.window_seconds,
     }
 
 
@@ -731,12 +766,19 @@ def _window_from_payload(payload: object) -> AgyQuotaWindow | None:
     remaining_percent = payload.get("remaining_percent")
     resets_in = payload.get("resets_in")
     resets_in_minutes = payload.get("resets_in_minutes")
+    resets_at = _coerce_float(payload.get("resets_at"))
+    window_seconds = _coerce_float(payload.get("window_seconds"))
     if (
         not isinstance(remaining_percent, (int, float))
         or isinstance(remaining_percent, bool)
         or not 0 <= float(remaining_percent) <= 100
         or (resets_in is not None and not isinstance(resets_in, str))
         or (resets_in_minutes is not None and not isinstance(resets_in_minutes, int))
+        or (resets_at is not None and not math.isfinite(resets_at))
+        or (
+            window_seconds is not None
+            and (not math.isfinite(window_seconds) or window_seconds <= 0)
+        )
     ):
         return None
     if (resets_in is None) != (resets_in_minutes is None):
@@ -745,4 +787,6 @@ def _window_from_payload(payload: object) -> AgyQuotaWindow | None:
         remaining_percent=float(remaining_percent),
         resets_in=resets_in,
         resets_in_minutes=resets_in_minutes,
+        resets_at=resets_at,
+        window_seconds=window_seconds,
     )
