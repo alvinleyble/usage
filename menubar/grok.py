@@ -14,6 +14,7 @@ from typing import cast
 
 from i18n import _t
 from loaders.grok_quota_probe import GrokQuotaResult, find_grok, load_quota
+from menubar.reset_window import format_remaining_percentage
 from menubar.state import (
     GROK_COLOR,
     GrokStaleState,
@@ -59,13 +60,24 @@ def project_quota(
     if period_end < current_time:
         return None
     stale = _stale_state(quota.fetched_at, current_time, language)
+    window_seconds: float | None = None
+    if quota.period_start is not None:
+        try:
+            period_start = parse_iso8601_utc_or_raise(quota.period_start).timestamp()
+        except (TypeError, ValueError):
+            pass
+        else:
+            window_seconds = period_end - period_start
+    remaining_percentage = format_remaining_percentage(
+        period_end, window_seconds, current_time
+    )
     used = max(0.0, min(100.0, quota.used_percent))
     return GrokQuotaProjection(
         weekly=QuotaRowState(
             title=_t(language, "weekly_label"),
             percent=used,
             percent_text=_t(language, "percent_used", value=_format_percent(used)),
-            reset_text=_t(
+            reset_text=remaining_percentage or _t(
                 language,
                 "reset_in",
                 time=format_human_time(max(0.0, period_end - current_time), language),

@@ -23,6 +23,7 @@ from loaders.agy_quota_probe import (
 from loaders.agy_quota_probe import (
     find_agy as find_agy,
 )
+from menubar.reset_window import format_remaining_percentage
 from menubar.state import (
     AGY_COLOR,
     AgyStaleState,
@@ -105,6 +106,7 @@ def project_quota(
             _t(language, "session_label"),
             selected.five_hour,
             language,
+            current_time,
             age_minutes,
             forecast_seconds=session_forecast,
         ),
@@ -112,6 +114,7 @@ def project_quota(
             _t(language, "weekly_label"),
             selected.weekly,
             language,
+            current_time,
             age_minutes,
             forecast_seconds=weekly_forecast,
             warning_max_seconds=AGY_WEEKLY_WARNING_MAX_SECONDS,
@@ -186,6 +189,7 @@ def _window_row(
     title: str,
     window: AgyQuotaWindow,
     language: str,
+    now: float,
     age_minutes: int = 0,
     forecast_seconds: float | None = None,
     warning_max_seconds: float | None = None,
@@ -193,8 +197,13 @@ def _window_row(
     remaining = _remaining_percent(window)
     used = 100.0 - remaining
     warning = False
+    remaining_percentage = format_remaining_percentage(
+        window.resets_at, window.window_seconds, now
+    )
     if remaining == 100.0:
         reset_text = _t(language, "agy_quota_full")
+    elif remaining_percentage is not None:
+        reset_text = remaining_percentage
     elif window.resets_in_minutes is None:
         reset_text = _t(language, "reset_placeholder")
     else:

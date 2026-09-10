@@ -56,6 +56,12 @@ class UsageSnapshot:
     polled_at: float
     is_stale: bool = False
     data_source: str = "hook"
+    # These remain absent unless the provider payload states the actual window
+    # length and reset boundary explicitly.  Never infer a generic 5h/week.
+    current_window_seconds: float | None = None
+    weekly_window_seconds: float | None = None
+    current_reset_is_authoritative: bool = False
+    weekly_reset_is_authoritative: bool = False
 
 
 @dataclass(slots=True)
@@ -83,13 +89,6 @@ def _pct(value: Any) -> int | None:
     return max(0, min(100, round(numeric)))
 
 
-def _reset_at(value: Any, default: float) -> float:
-    numeric = _as_finite_float(value)
-    if numeric is None:
-        return default
-    return numeric
-
-
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -102,6 +101,20 @@ def _as_finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return numeric if math.isfinite(numeric) else None
+
+
+def _window_seconds(window: dict[str, Any]) -> float | None:
+    """Read only an explicitly reported quota-window duration."""
+    for key, multiplier in (
+        ("window_seconds", 1.0),
+        ("window_duration_seconds", 1.0),
+        ("window_minutes", 60.0),
+        ("window_duration_minutes", 60.0),
+    ):
+        value = _as_finite_float(window.get(key))
+        if value is not None and value > 0:
+            return value * multiplier
+    return None
 
 
 def _iso_timestamp(value: Any) -> float | None:
@@ -186,12 +199,16 @@ def _read_claude_json_snapshot() -> UsageSnapshot | None:
     now = time.time()
     five_reset = _iso_timestamp(five.get("resets_at")) if five else None
     seven_reset = _iso_timestamp(seven.get("resets_at")) if seven else None
+    five_window_seconds = _window_seconds(five)
+    seven_window_seconds = _window_seconds(seven)
     if five and five_reset is None:
         return None
     if seven and seven_reset is None:
         return None
-    five_reset = five_reset if five_reset is not None else now
-    seven_reset = seven_reset if seven_reset is not None else now
+    five_reset_is_authoritative = five_reset is not None
+    seven_reset_is_authoritative = seven_reset is not None
+    five_reset = five_reset if five_reset_is_authoritative else now
+    seven_reset = seven_reset if seven_reset_is_authoritative else now
     if five_pct is not None and five_reset < now:
         five_pct = 0
     if seven_pct is not None and seven_reset < now:
@@ -207,6 +224,10 @@ def _read_claude_json_snapshot() -> UsageSnapshot | None:
         polled_at=polled_at,
         is_stale=(now - polled_at) > STALE_SECONDS,
         data_source="claude-json",
+        current_window_seconds=five_window_seconds,
+        weekly_window_seconds=seven_window_seconds,
+        current_reset_is_authoritative=five_reset_is_authoritative,
+        weekly_reset_is_authoritative=seven_reset_is_authoritative,
     )
 
 
@@ -228,6 +249,10 @@ def _time_adjusted(snapshot: UsageSnapshot) -> UsageSnapshot:
         polled_at=snapshot.polled_at,
         is_stale=(now - snapshot.polled_at) > STALE_SECONDS,
         data_source=snapshot.data_source,
+        current_window_seconds=snapshot.current_window_seconds,
+        weekly_window_seconds=snapshot.weekly_window_seconds,
+        current_reset_is_authoritative=snapshot.current_reset_is_authoritative,
+        weekly_reset_is_authoritative=snapshot.weekly_reset_is_authoritative,
     )
 
 
@@ -291,8 +316,10 @@ def _build_snapshot(data: dict[str, Any], *, data_source: str = "hook") -> Usage
         return None
 
     now = time.time()
-    five_reset = _reset_at(five.get("resets_at"), now)
-    seven_reset = _reset_at(seven.get("resets_at"), now)
+    five_reset_raw = _as_finite_float(five.get("resets_at"))
+    seven_reset_raw = _as_finite_float(seven.get("resets_at"))
+    five_reset = five_reset_raw if five_reset_raw is not None else now
+    seven_reset = seven_reset_raw if seven_reset_raw is not None else now
 
     # Reset expired percentages to match Claude Code rate-limit semantics.
     five_pct = (
@@ -325,6 +352,10 @@ def _build_snapshot(data: dict[str, Any], *, data_source: str = "hook") -> Usage
         polled_at=polled_at,
         is_stale=(now - polled_at) > STALE_SECONDS,
         data_source=data_source,
+        current_window_seconds=_window_seconds(five),
+        weekly_window_seconds=_window_seconds(seven),
+        current_reset_is_authoritative=five_reset_raw is not None,
+        weekly_reset_is_authoritative=seven_reset_raw is not None,
     )
 
 

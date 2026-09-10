@@ -38,6 +38,7 @@ class GrokQuotaResult:
     period_end: str
     fetched_at: str
     subscription_tier: str | None
+    period_start: str | None = None
 
 
 def find_grok() -> Path | None:
@@ -123,9 +124,14 @@ def _result_from_line(line: bytes) -> GrokQuotaResult | None:
         or not isinstance(period_end := period.get("end"), str)
     ):
         return None
+    period_start = period.get("start")
+    if period_start is not None and not isinstance(period_start, str):
+        return None
     try:
         parse_iso8601_utc_or_raise(fetched_at)
         parse_iso8601_utc_or_raise(period_end)
+        if period_start is not None:
+            parse_iso8601_utc_or_raise(period_start)
     except (TypeError, ValueError):
         return None
     tier = context.get("subscriptionTier")
@@ -133,5 +139,6 @@ def _result_from_line(line: bytes) -> GrokQuotaResult | None:
         used_percent=float(used_percent),
         period_end=period_end,
         fetched_at=fetched_at,
+        period_start=period_start,
         subscription_tier=tier if isinstance(tier, str) else None,
     )

@@ -19,6 +19,7 @@ import math
 import os
 import sys
 from contextlib import suppress
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 STATUSLINE_TRANSLATIONS = {
@@ -273,6 +274,27 @@ def _terminal_width(value: Any) -> int:
         return 116
 
 
+def _window_seconds(entry: Dict[str, Any]) -> Optional[float]:
+    for key, multiplier in (
+        ("window_seconds", 1.0),
+        ("window_duration_seconds", 1.0),
+        ("window_minutes", 60.0),
+        ("window_duration_minutes", 60.0),
+    ):
+        value = _as_float(entry.get(key))
+        if value is not None and value > 0:
+            return value * multiplier
+    return None
+
+
+def _remaining_percentage(remaining: float, window_seconds: Optional[float]) -> Optional[str]:
+    if window_seconds is None or window_seconds <= 0 or remaining < 0:
+        return None
+    percent = max(0.0, min(100.0, remaining / window_seconds * 100.0))
+    rounded = Decimal(str(percent)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return "{}%".format(format(rounded, "f").rstrip("0").rstrip("."))
+
+
 def _quota_keys(data: Dict[str, Any]) -> Tuple[str, str]:
     model_id = _as_dict(data.get("model")).get("id", "")
     if isinstance(model_id, str) and "gemini" in model_id.lower():
@@ -297,7 +319,10 @@ def _quota_parts(data: Dict[str, Any], bar_width: int) -> List[Tuple[str, str, s
         reset = _as_float(entry.get("reset_in_seconds"))
         reset_str = ""
         if reset is not None and reset > 0:
-            if lang in ("zh-TW", "zh-CN"):
+            remaining_percentage = _remaining_percentage(reset, _window_seconds(entry))
+            if remaining_percentage is not None:
+                reset_str = f" ({remaining_percentage})"
+            elif lang in ("zh-TW", "zh-CN"):
                 reset_str = f" ({_t('remaining_prefix')}{fmt_duration(reset)})"
             else:
                 reset_str = f" ({fmt_duration(reset)} {_t('remaining_prefix')})"

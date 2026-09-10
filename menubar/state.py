@@ -22,6 +22,7 @@ from loaders import codex_loader, grok_loader
 from loaders.codex_paths import codex_home
 from loaders.history_loader import CLAUDE_PROJECTS_DIR, UsageEntry, load_entries
 from menubar.prefs import _hide_claude_enabled, _hide_codex_enabled, _quota_card_order
+from menubar.reset_window import format_remaining_percentage
 from pricing import calculate_cost
 from quota.burn_rate import WARNING_PERCENT_FLOOR, BurnRateTracker
 from quota.usage_rate import GROUP_NAMES
@@ -756,6 +757,7 @@ def codex_rows(
             now,
             CODEX_COLOR,
             language,
+            window_seconds=_window_minutes_to_seconds(rate_limits.five_hour_window_minutes),
             forecast_seconds=burn_rate_trackers["codex_session"].forecast_seconds(),
         ),
         _quota_row(
@@ -765,6 +767,7 @@ def codex_rows(
             now,
             CODEX_COLOR,
             language,
+            window_seconds=_window_minutes_to_seconds(rate_limits.seven_day_window_minutes),
             forecast_seconds=burn_rate_trackers["codex_weekly"].forecast_seconds(
                 window_seconds=WEEKLY_FORECAST_WINDOW_SECONDS,
                 min_span_seconds=WEEKLY_FORECAST_MIN_SPAN_SECONDS,
@@ -841,6 +844,11 @@ def build_popover_state(
             now,
             CLAUDE_COLOR,
             language,
+            window_seconds=(
+                snapshot.current_window_seconds
+                if snapshot.current_reset_is_authoritative
+                else None
+            ),
             forecast_seconds=burn_rate_trackers["claude_session"].forecast_seconds(),
         )
         claude_weekly = _quota_row(
@@ -850,6 +858,11 @@ def build_popover_state(
             now,
             CLAUDE_COLOR,
             language,
+            window_seconds=(
+                snapshot.weekly_window_seconds
+                if snapshot.weekly_reset_is_authoritative
+                else None
+            ),
             forecast_seconds=burn_rate_trackers["claude_weekly"].forecast_seconds(
                 window_seconds=WEEKLY_FORECAST_WINDOW_SECONDS,
                 min_span_seconds=WEEKLY_FORECAST_MIN_SPAN_SECONDS,
@@ -944,6 +957,7 @@ def _quota_row(
     now: float,
     color: tuple[float, float, float],
     language: str = "en",
+    window_seconds: float | None = None,
     forecast_seconds: float | None = None,
     warning_max_seconds: float | None = None,
 ) -> QuotaRowState:
@@ -952,8 +966,9 @@ def _quota_row(
     pct = max(0.0, min(100.0, float(pct)))
     time_to_reset = resets_at - now
     warning_seconds: float | None = None
+    remaining_percentage = format_remaining_percentage(resets_at, window_seconds, now)
     if time_to_reset < 60:
-        reset_text = _t(language, "reset_imminent")
+        fallback_reset_text = _t(language, "reset_imminent")
         warning = False
     else:
         if (
@@ -965,18 +980,19 @@ def _quota_row(
             warning_seconds = forecast_seconds
         warning = warning_seconds is not None
         if warning_seconds is not None:
-            reset_text = _t(
+            fallback_reset_text = _t(
                 language,
                 "burn_warning",
                 empty=format_human_time(warning_seconds, language),
                 reset=format_human_time(time_to_reset, language),
             )
         else:
-            reset_text = _t(
+            fallback_reset_text = _t(
                 language,
                 "reset_in",
                 time=format_human_time(time_to_reset, language),
             )
+    reset_text = remaining_percentage or fallback_reset_text
     row = QuotaRowState(
         title=title,
         percent=pct,
@@ -987,10 +1003,13 @@ def _quota_row(
         available=True,
     )
     if warning_seconds is not None:
-        row.reset_text_compact = _t(
-            language,
-            "burn_warning_compact",
-            empty=format_human_time(warning_seconds, language),
+        row.reset_text_compact = (
+            remaining_percentage
+            or _t(
+                language,
+                "burn_warning_compact",
+                empty=format_human_time(warning_seconds, language),
+            )
         )
     return row
 
@@ -1008,6 +1027,16 @@ def _missing_row(
         color=color,
         available=False,
     )
+
+
+def _window_minutes_to_seconds(window_minutes: float | None) -> float | None:
+    if window_minutes is None or isinstance(window_minutes, bool):
+        return None
+    try:
+        seconds = float(window_minutes) * 60.0
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 
 def _format_percent(value: float) -> str:
